@@ -55,20 +55,41 @@ class HybridCNNBiLSTMModel(nn.Module):
         out = self.fc(h_lstm[:, -1, :])
         return out
 
+# Fungsi diagnostik untuk memeriksa file di direktori kerja
+def check_file_in_root_dir():
+    file_name = "return_reksa_dana_bni_fixed.xlsx"
+    current_dir = os.getcwd()
+    
+    # Cek isi direktori kerja
+    try:
+        files_in_dir = os.listdir(current_dir)
+        st.info(f"Direktori Kerja: {current_dir}")
+        st.info(f"File ditemukan di direktori kerja: {files_in_dir}")
+        if "model" in files_in_dir and os.path.isdir("model"):
+            files_in_model = os.listdir("model")
+            st.info(f"File ditemukan di folder 'model': {files_in_model}")
+            
+    except Exception as e:
+        st.warning(f"Gagal membaca isi direktori: {e}")
+        
+    # Pengecekan status file Excel
+    if file_name not in files_in_dir:
+        st.error(f"❌ File Excel '{file_name}' tidak terdaftar di direktori root.")
+        st.stop()
+    
+    return file_name
 
 # 3. LOAD DATA
 @st.cache_data
 def load_excel():
-    file_path = "return_reksa_dana_bni_fixed.xlsx"
     
-    # Cek keberadaan file dan tampilkan error yang jelas jika tidak ditemukan
-    if not os.path.exists(file_path):
-        st.error(f"❌ File Excel tidak ditemukan di path: {file_path}. Pastikan file telah diunggah.")
-        st.stop() # Hentikan eksekusi jika file tidak ada
-        
+    file_name = check_file_in_root_dir()
+
     try:
-        df = pd.read_excel(file_path)
+        # Menggunakan nama file langsung (relative path)
+        df = pd.read_excel(file_name) 
         df["Date"] = pd.to_datetime(df["Date"])
+        st.success(f"✅ File Excel '{file_name}' berhasil dimuat!")
         return df.sort_values("Date")
     except Exception as e:
         st.error(f"❌ Gagal memuat atau memproses file Excel: {e}")
@@ -95,6 +116,8 @@ def load_models():
             torch.load("model/hybrid_cnn_bilstm.pt", map_location="cpu")
         )
         hybrid.eval()
+        st.success("✅ Model PyTorch (BiLSTM & Hybrid) berhasil dimuat!")
+
 
     except Exception as e:
         st.error(f"❌ Error saat memuat model PyTorch. Pastikan arsitektur di kelas BiLSTMModel dan HybridCNNBiLSTMModel sudah benar. Error: {e}")
