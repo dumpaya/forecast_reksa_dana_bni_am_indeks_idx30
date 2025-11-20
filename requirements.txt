@@ -1,7 +1,10 @@
 streamlit
-pandas
 numpy
-plotly
-statsmodels
-arch
-openpyxl
+pandas
+matplotlib
+seaborn
+scikit-learn
+joblib
+requests
+tensorflow-cpu==2.15.0
+keras==2.15.0
