@@ -5,27 +5,59 @@ import pickle
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from sklearn.preprocessing import MinMaxScaler
+import torch.nn.functional as F # Diperlukan untuk model Hybrid
+from sklearn.preprocessing import MinMaxScaler 
 
 st.set_page_config(
     page_title="Dashboard Forecast Reksa Dana IDX30",
     layout="wide"
 )
 
-# 2. DUMMY MODEL (HANYA UNTUK LOAD STATE_DICT)
-class EmptyModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        # Layer kosong — akan ditimpa oleh state_dict
-        self.dummy = nn.Linear(1, 1)
+# 2. DEFINISI ARSITEKTUR MODEL PYTORCH (HARAP SESUAIKAN DENGAN MODEL ASLI ANDA!)
+# WINDOW = 30, FEATURES = 1
+WINDOW = 30
+
+class BiLSTMModel(nn.Module):
+    # Contoh arsitektur BiLSTM untuk input sequence (30, 1)
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, output_size=1):
+        super(BiLSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(hidden_size * 2, output_size) # *2 karena bidirectional
 
     def forward(self, x):
-        return x[:, -1:, :]  # hanya placeholder, tidak dipakai
+        h_lstm, _ = self.lstm(x)
+        # Ambil output dari langkah terakhir untuk prediksi satu langkah
+        out = self.fc(h_lstm[:, -1, :])
+        return out
+
+class HybridCNNBiLSTMModel(nn.Module):
+    # Contoh arsitektur CNN-BiLSTM
+    def __init__(self, input_feature=1, cnn_filters=32, lstm_hidden=64):
+        super(HybridCNNBiLSTMModel, self).__init__()
+        # CNN Layer: Mengubah shape (N, 30, 1) -> (N, 1, 30) -> Conv1D -> (N, 32, 30)
+        self.conv1d = nn.Conv1d(in_channels=input_feature, out_channels=cnn_filters, kernel_size=3, padding=1)
+        
+        # LSTM Layer: Input size adalah output dari CNN (cnn_filters = 32)
+        self.lstm = nn.LSTM(cnn_filters, lstm_hidden, num_layers=2, batch_first=True, bidirectional=True)
+        self.fc = nn.Linear(lstm_hidden * 2, 1)
+
+    def forward(self, x):
+        # 1. Permute untuk Conv1D: (N, seq_len, features) -> (N, features, seq_len)
+        x = x.permute(0, 2, 1) 
+        x = F.relu(self.conv1d(x))
+        
+        # 2. Permute kembali untuk LSTM: (N, features, seq_len) -> (N, seq_len, features)
+        x = x.permute(0, 2, 1) 
+        
+        h_lstm, _ = self.lstm(x)
+        out = self.fc(h_lstm[:, -1, :])
+        return out
 
 
 # 3. LOAD DATA
 @st.cache_data
 def load_excel():
+    # File return_reksa_dana_bni_fixed.xlsx berada di root folder
     df = pd.read_excel("return_reksa_dana_bni_fixed.xlsx")
     df["Date"] = pd.to_datetime(df["Date"])
     return df.sort_values("Date")
@@ -33,31 +65,31 @@ def load_excel():
 df = load_excel()
 
 
-# 4. LOAD MODEL 
+# 4. LOAD MODEL (Menggunakan Path Relatif) 
 @st.cache_resource
 def load_models():
 
-    bilstm = EmptyModel()
-    hybrid = EmptyModel()
+    bilstm = BiLSTMModel()
+    hybrid = HybridCNNBiLSTMModel()
 
     try:
+        # PENTING: Gunakan path relatif ke folder 'model'
         bilstm.load_state_dict(
-            torch.load("/mnt/data/bilstm_model.pt", map_location="cpu"),
-            strict=False
+            torch.load("model/bilstm_model.pt", map_location="cpu")
         )
         bilstm.eval()
 
         hybrid.load_state_dict(
-            torch.load("/mnt/data/hybrid_cnn_bilstm.pt", map_location="cpu"),
-            strict=False
+            torch.load("model/hybrid_cnn_bilstm.pt", map_location="cpu")
         )
         hybrid.eval()
 
     except Exception as e:
-        st.error(f"❌ Error load model: {e}")
+        st.error(f"❌ Error saat memuat model PyTorch. Pastikan arsitektur di kelas BiLSTMModel dan HybridCNNBiLSTMModel sudah benar. Error: {e}")
         st.stop()
 
-    with open("/mnt/data/holt_winters_best.pkl", "rb") as f:
+    # PENTING: Gunakan path relatif ke folder 'model'
+    with open("model/holt_winters_best.pkl", "rb") as f:
         hw = pickle.load(f)
 
     with open("model/scaler.pkl", "rb") as f:
@@ -70,8 +102,6 @@ bilstm_model, hybrid_model, hw_model, scaler = load_models()
 
 
 # 5. PREPROCESS WINDOW
-WINDOW = 30
-
 def make_sequence(data, window=WINDOW):
     seq = []
     for i in range(len(data) - window):
@@ -103,68 +133,87 @@ def predict_hybrid(df):
     return scaler.inverse_transform(pred).flatten()
 
 def predict_hw(steps):
-    return hw_model.forecast(steps)
+    # Asumsi model Holt-Winters dapat memprediksi langsung
+    return hw_model.forecast(steps=steps)
 
 
 # 7. SIDEBAR
-st.sidebar.header("Pengaturan")
+st.sidebar.header("Pengaturan Forecast")
 model_choice = st.sidebar.selectbox(
-    "Pilih model:",
+    "Pilih Model:",
     ["Holt-Winters", "BiLSTM", "Hybrid CNN-BiLSTM"]
 )
 
-steps = st.sidebar.slider("Horizon prediksi:", 10, 90, 30)
+steps = st.sidebar.slider("Horizon Prediksi (Hari):", 10, 90, 30)
 
 
 # 8. MAIN UI
 st.title("📈 Dashboard Forecast Return Reksa Dana BNI-AM IDX30")
 
-st.write("Data terbaru:")
+st.write("Data terbaru (Return):")
 st.dataframe(df.tail(10))
 
 
 # 9. VISUALISASI
-if model_choice == "Holt-Winters":
+st.subheader(f"Hasil Prediksi Menggunakan {model_choice}")
 
-    st.subheader("Forecast Holt-Winters")
-    forecast = predict_hw(steps)
-    dates = pd.date_range(df["Date"].iloc[-1], periods=steps + 1, freq="D")[1:]
+# Inisialisasi variabel pred dan dates
+pred = None
+dates = None
+forecast = None
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(df["Date"], df["Return"], label="Actual")
-    ax.plot(dates, forecast, label="Forecast")
-    ax.legend()
-    st.pyplot(fig)
+try:
+    if model_choice == "Holt-Winters":
+        forecast = predict_hw(steps)
+        # Tanggal prediksi dimulai setelah hari terakhir data aktual
+        dates = pd.date_range(df["Date"].iloc[-1], periods=steps + 1, freq="D")[1:]
 
-else:
-    st.subheader(model_choice)
-
-    if model_choice == "BiLSTM":
+    elif model_choice == "BiLSTM":
         pred = predict_bilstm(df)
-    else:
+        
+    else: # Hybrid CNN-BiLSTM
         pred = predict_hybrid(df)
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(df["Date"], df["Return"], label="Actual")
-    ax.plot(df["Date"].iloc[WINDOW:], pred, label=model_choice)
-    ax.legend()
-    st.pyplot(fig)
+except Exception as e:
+    st.error(f"Gagal melakukan prediksi. Pastikan model PyTorch sudah termuat dengan benar. Detail: {e}")
+    st.stop()
+
+
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(df["Date"], df["Return"], label="Actual Return", color='tab:blue')
+
+if model_choice == "Holt-Winters" and forecast is not None:
+    ax.plot(dates, forecast, label=f"Forecast ({steps} Hari)", color='tab:orange', linestyle='--')
+elif pred is not None:
+    # Untuk model DL, plot prediksi dimulai setelah WINDOW
+    ax.plot(df["Date"].iloc[WINDOW:], pred, label=f"Predicted (In-Sample)", color='tab:red')
+
+# Styling plot
+ax.set_title(f"Perbandingan Actual vs. {model_choice} Forecast", fontsize=16)
+ax.set_xlabel("Tanggal")
+ax.set_ylabel("Return Harian")
+ax.grid(True, linestyle=':', alpha=0.6)
+ax.legend()
+st.pyplot(fig)
 
 
 # 10. DOWNLOAD BUTTON
 if st.button("Download Hasil Prediksi"):
 
-    if model_choice == "Holt-Winters":
+    if model_choice == "Holt-Winters" and dates is not None:
         result = pd.DataFrame({"Date": dates, "Forecast": forecast})
-    else:
+    elif pred is not None:
         result = pd.DataFrame({
             "Date": df["Date"].iloc[WINDOW:],
             "Forecast": pred
         })
+    else:
+        st.warning("Tidak ada data prediksi untuk diunduh.")
+        st.stop()
 
     st.download_button(
         "Download CSV",
         result.to_csv(index=False).encode("utf-8"),
-        file_name=f"forecast_{model_choice}.csv",
+        file_name=f"forecast_{model_choice.lower().replace('-', '_')}.csv",
         mime="text/csv"
     )
