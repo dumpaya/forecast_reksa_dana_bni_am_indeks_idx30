@@ -5,8 +5,9 @@ import pickle
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import torch.nn.functional as F # Diperlukan untuk model Hybrid
+import torch.nn.functional as F 
 from sklearn.preprocessing import MinMaxScaler 
+import os # Tambahkan import os untuk pengecekan file
 
 st.set_page_config(
     page_title="Dashboard Forecast Reksa Dana IDX30",
@@ -38,6 +39,7 @@ class HybridCNNBiLSTMModel(nn.Module):
         self.conv1d = nn.Conv1d(in_channels=input_feature, out_channels=cnn_filters, kernel_size=3, padding=1)
         
         # LSTM Layer: Input size adalah output dari CNN (cnn_filters = 32)
+        # Perhatikan: ukuran input LSTM mungkin berbeda jika ada MaxPool
         self.lstm = nn.LSTM(cnn_filters, lstm_hidden, num_layers=2, batch_first=True, bidirectional=True)
         self.fc = nn.Linear(lstm_hidden * 2, 1)
 
@@ -57,10 +59,20 @@ class HybridCNNBiLSTMModel(nn.Module):
 # 3. LOAD DATA
 @st.cache_data
 def load_excel():
-    # File return_reksa_dana_bni_fixed.xlsx berada di root folder
-    df = pd.read_excel("return_reksa_dana_bni_fixed.xlsx")
-    df["Date"] = pd.to_datetime(df["Date"])
-    return df.sort_values("Date")
+    file_path = "return_reksa_dana_bni_fixed.xlsx"
+    
+    # Cek keberadaan file dan tampilkan error yang jelas jika tidak ditemukan
+    if not os.path.exists(file_path):
+        st.error(f"❌ File Excel tidak ditemukan di path: {file_path}. Pastikan file telah diunggah.")
+        st.stop() # Hentikan eksekusi jika file tidak ada
+        
+    try:
+        df = pd.read_excel(file_path)
+        df["Date"] = pd.to_datetime(df["Date"])
+        return df.sort_values("Date")
+    except Exception as e:
+        st.error(f"❌ Gagal memuat atau memproses file Excel: {e}")
+        st.stop()
 
 df = load_excel()
 
@@ -89,11 +101,19 @@ def load_models():
         st.stop()
 
     # PENTING: Gunakan path relatif ke folder 'model'
-    with open("model/holt_winters_best.pkl", "rb") as f:
-        hw = pickle.load(f)
+    try:
+        with open("model/holt_winters_best.pkl", "rb") as f:
+            hw = pickle.load(f)
+    except Exception as e:
+        st.error(f"❌ Gagal memuat model Holt-Winters (holt_winters_best.pkl). Error: {e}")
+        st.stop()
 
-    with open("model/scaler.pkl", "rb") as f:
-        scaler = pickle.load(f)
+    try:
+        with open("model/scaler.pkl", "rb") as f:
+            scaler = pickle.load(f)
+    except Exception as e:
+        st.error(f"❌ Gagal memuat Scaler (scaler.pkl). Error: {e}")
+        st.stop()
 
     return bilstm, hybrid, hw, scaler
 
@@ -113,6 +133,7 @@ def make_sequence(data, window=WINDOW):
 def predict_bilstm(df):
     X = scaler.transform(df[["Return"]])
     seq = make_sequence(X)
+    # Ubah ke PyTorch tensor (batch_size, seq_len, features)
     seq = torch.tensor(seq, dtype=torch.float32)
 
     with torch.no_grad():
@@ -124,6 +145,7 @@ def predict_bilstm(df):
 def predict_hybrid(df):
     X = scaler.transform(df[["Return"]])
     seq = make_sequence(X)
+    # Ubah ke PyTorch tensor (batch_size, seq_len, features)
     seq = torch.tensor(seq, dtype=torch.float32)
 
     with torch.no_grad():
@@ -175,7 +197,7 @@ try:
         pred = predict_hybrid(df)
 
 except Exception as e:
-    st.error(f"Gagal melakukan prediksi. Pastikan model PyTorch sudah termuat dengan benar. Detail: {e}")
+    st.error(f"Gagal melakukan prediksi untuk model {model_choice}. Detail: {e}")
     st.stop()
 
 
@@ -183,13 +205,18 @@ fig, ax = plt.subplots(figsize=(12, 6))
 ax.plot(df["Date"], df["Return"], label="Actual Return", color='tab:blue')
 
 if model_choice == "Holt-Winters" and forecast is not None:
+    # Plot forecast Holt-Winters
     ax.plot(dates, forecast, label=f"Forecast ({steps} Hari)", color='tab:orange', linestyle='--')
+    
+    # Tambahkan garis vertikal pemisah data historis dan prediksi
+    ax.axvline(x=df["Date"].iloc[-1], color='gray', linestyle=':', linewidth=1, label='Start Forecast')
+    
 elif pred is not None:
     # Untuk model DL, plot prediksi dimulai setelah WINDOW
     ax.plot(df["Date"].iloc[WINDOW:], pred, label=f"Predicted (In-Sample)", color='tab:red')
 
 # Styling plot
-ax.set_title(f"Perbandingan Actual vs. {model_choice} Forecast", fontsize=16)
+ax.set_title(f"Perbandingan Actual vs. {model_choice} Hasil", fontsize=16)
 ax.set_xlabel("Tanggal")
 ax.set_ylabel("Return Harian")
 ax.grid(True, linestyle=':', alpha=0.6)
