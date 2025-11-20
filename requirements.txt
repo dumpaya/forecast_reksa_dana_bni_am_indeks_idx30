@@ -4,7 +4,10 @@ pandas
 matplotlib
 seaborn
 scikit-learn
+statsmodels
 joblib
 requests
-tensorflow-cpu==2.15.0
-keras==2.15.0
+
+tensorflow-cpu==2.9.1
+keras==2.9.0
+protobuf==3.20.*
